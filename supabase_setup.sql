@@ -1,41 +1,43 @@
--- Выполнить один раз в Supabase > SQL Editor.
--- Приложение предполагает, что просмотр данных и фото доступен по публичной ссылке.
-create table if not exists public.pump_state (
-  id integer primary key check (id=1),
-  data jsonb not null default '{"departments":[],"pumps":[]}'::jsonb,
-  updated_at timestamptz not null default now()
+-- Учёт мотопомп ДЧС СКО: безопасное размещение в проекте ОПТП.
+-- Не меняет таблицы optp_* и не использует общие app_admins / pump_state.
+CREATE TABLE IF NOT EXISTS public.mp_pump_state (
+  id integer PRIMARY KEY CHECK (id = 1),
+  data jsonb NOT NULL DEFAULT '{"departments":[],"pumps":[]}'::jsonb,
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
-insert into public.pump_state(id,data) values(1,'{"departments":[],"pumps":[]}'::jsonb)
-on conflict(id) do nothing;
-create table if not exists public.app_admins (
- user_id uuid primary key references auth.users(id) on delete cascade
+INSERT INTO public.mp_pump_state(id,data)
+VALUES (1,'{"departments":[],"pumps":[]}'::jsonb)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS public.mp_admins (
+  user_id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE
 );
-alter table public.pump_state enable row level security;
-alter table public.app_admins enable row level security;
-revoke all on public.pump_state from anon,authenticated;
-revoke all on public.app_admins from anon,authenticated;
-grant select on public.pump_state to anon,authenticated;
-grant update on public.pump_state to authenticated;
-grant select on public.app_admins to authenticated;
-drop policy if exists "pump_public_read" on public.pump_state;
-create policy "pump_public_read" on public.pump_state for select to anon,authenticated using (true);
-drop policy if exists "pump_admin_write" on public.pump_state;
-create policy "pump_admin_write" on public.pump_state for update to authenticated
-using (exists (select 1 from public.app_admins where user_id=(select auth.uid())))
-with check (id=1 and exists (select 1 from public.app_admins where user_id=(select auth.uid())));
-drop policy if exists "admin_read_self" on public.app_admins;
-create policy "admin_read_self" on public.app_admins for select to authenticated
-using (user_id=(select auth.uid()));
--- Создать bucket: фото не секретные, доступны всем посетителям.
-insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types)
-values('pump-photos','pump-photos',true,5242880,array['image/jpeg'])
-on conflict(id) do update set public=true, file_size_limit=5242880, allowed_mime_types=array['image/jpeg'];
-drop policy if exists "pump_photo_public_read" on storage.objects;
-create policy "pump_photo_public_read" on storage.objects for select to anon,authenticated
-using (bucket_id='pump-photos');
-drop policy if exists "pump_photo_admin_insert" on storage.objects;
-create policy "pump_photo_admin_insert" on storage.objects for insert to authenticated
-with check (bucket_id='pump-photos' and exists(select 1 from public.app_admins where user_id=(select auth.uid())));
--- После создания пользователя в Authentication > Users:
--- скопировать его UUID и отдельно выполнить:
--- insert into public.app_admins(user_id) values ('ВАШ-UUID') on conflict do nothing;
+ALTER TABLE public.mp_pump_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mp_admins ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.mp_pump_state FROM anon, authenticated;
+REVOKE ALL ON public.mp_admins FROM anon, authenticated;
+GRANT SELECT ON public.mp_pump_state TO anon, authenticated;
+GRANT UPDATE ON public.mp_pump_state TO authenticated;
+GRANT SELECT ON public.mp_admins TO authenticated;
+
+CREATE POLICY mp_read_pumps ON public.mp_pump_state
+FOR SELECT TO anon,authenticated USING (true);
+CREATE POLICY mp_admin_update_pumps ON public.mp_pump_state
+FOR UPDATE TO authenticated
+USING (EXISTS (SELECT 1 FROM public.mp_admins WHERE user_id=(SELECT auth.uid())))
+WITH CHECK (id=1 AND EXISTS (SELECT 1 FROM public.mp_admins WHERE user_id=(SELECT auth.uid())));
+CREATE POLICY mp_read_own_admin ON public.mp_admins
+FOR SELECT TO authenticated USING (user_id=(SELECT auth.uid()));
+
+INSERT INTO storage.buckets(id,name,public,file_size_limit,allowed_mime_types)
+VALUES ('mp-photos','mp-photos',true,5242880,ARRAY['image/jpeg'])
+ON CONFLICT (id) DO NOTHING;
+CREATE POLICY mp_public_photo_read ON storage.objects
+FOR SELECT TO anon,authenticated USING (bucket_id='mp-photos');
+CREATE POLICY mp_admin_photo_upload ON storage.objects
+FOR INSERT TO authenticated
+WITH CHECK (bucket_id='mp-photos' AND EXISTS
+(SELECT 1 FROM public.mp_admins WHERE user_id=(SELECT auth.uid())));
+
+-- Администратора назначим ОТДЕЛЬНО после создания/выбора пользователя в Authentication:
+-- INSERT INTO public.mp_admins(user_id) VALUES ('UUID-ПОЛЬЗОВАТЕЛЯ') ON CONFLICT DO NOTHING;
